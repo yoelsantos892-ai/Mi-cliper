@@ -42,7 +42,7 @@ jobs:
           fc-cache -fv
 
       - name: Configurar Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -51,46 +51,64 @@ jobs:
         with:
           deno-version: v2.x
 
-      - name: Activar Cloudflare WARP (evita bloqueos de YouTube)
+      - name: Activar Cloudflare WARP opcional
         run: |
-          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(. /etc/os-release && echo $VERSION_CODENAME) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-          sudo apt-get update && sudo apt-get install -y cloudflare-warp
-          warp-cli --accept-tos registration new || true
-          warp-cli --accept-tos mode proxy || true
-          warp-cli --accept-tos connect || true
-          sleep 4
-          if curl -s --max-time 8 -x http://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
-            echo "--proxy http://127.0.0.1:40000" | sudo tee /etc/yt-dlp.conf
-            echo "WARP proxy activo"
-          else
-            echo "WARP no disponible, continuando directo"
-          fi
+          (
+            curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg &&
+            echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(. /etc/os-release && echo $VERSION_CODENAME) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list &&
+            sudo apt-get update &&
+            sudo apt-get install -y cloudflare-warp &&
+            warp-cli --accept-tos registration new &&
+            warp-cli --accept-tos mode proxy &&
+            warp-cli --accept-tos connect &&
+            sleep 4 &&
+            curl -s --max-time 8 -x http://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -q "warp=on" &&
+            echo "WARP_PROXY=http://127.0.0.1:40000" >> "$GITHUB_ENV" &&
+            echo "WARP activo"
+          ) || echo "Continuando sin WARP"
 
-      - name: Cargar cookies opcionales si existen
-        env:
-          YT_COOKIES: ${{ secrets.YT_COOKIES }}
-        run: |
-          if [ -n "$YT_COOKIES" ]; then
-            printf "%s" "$YT_COOKIES" > cookies.txt
-            echo "--cookies $(pwd)/cookies.txt" | sudo tee -a /etc/yt-dlp.conf
-            echo "Cookies activadas"
-          fi
-
-      - name: Descargar AI Agent Cut
+      - name: Descargar AI Agent Cut y yt-dlp actualizado
         run: |
           git clone --depth 1 https://github.com/wisdomdaniel5544-ops/ai-agent-cut.git
           cd ai-agent-cut
           pip install -r requirements.txt
-          pip install -U yt-dlp
+          pip install -U "yt-dlp[default]"
+
+      - name: Descargar video de YouTube (<=720p)
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        run: |
+          EXTRA_ARGS=()
+          if [ -n "$YT_COOKIES" ]; then
+            printf "%s\n" "$YT_COOKIES" > cookies.txt
+            EXTRA_ARGS+=(--cookies cookies.txt)
+            echo "Usando cookies de YT_COOKIES"
+          else
+            echo "AVISO: No se encontro el secreto YT_COOKIES"
+          fi
+          if [ -n "$WARP_PROXY" ]; then
+            EXTRA_ARGS+=(--proxy "$WARP_PROXY")
+          fi
+          if ! yt-dlp "${EXTRA_ARGS[@]}" --no-playlist -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best" --merge-output-format mp4 -o video.mp4 "${{ inputs.url }}"; then
+            echo "Primer intento fallo; reintentando sin proxy WARP..."
+            RETRY_ARGS=()
+            if [ -f cookies.txt ]; then
+              RETRY_ARGS+=(--cookies cookies.txt)
+            fi
+            yt-dlp "${RETRY_ARGS[@]}" --no-playlist -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best" --merge-output-format mp4 -o video.mp4 "${{ inputs.url }}"
+          fi
 
       - name: Crear clips virales
         run: |
           cd ai-agent-cut
-          python -m aiagentcut "${{ inputs.url }}" -o ../output -n "${{ inputs.cantidad }}" -p "${{ inputs.estilo }}" -m "${{ inputs.modelo }}"
+          if python -m aiagentcut --help | grep -q -- "--lang"; then
+            python -m aiagentcut ../video.mp4 -o ../output -n "${{ inputs.cantidad }}" -p "${{ inputs.estilo }}" -m "${{ inputs.modelo }}" --lang es
+          else
+            python -m aiagentcut ../video.mp4 -o ../output -n "${{ inputs.cantidad }}" -p "${{ inputs.estilo }}" -m "${{ inputs.modelo }}"
+          fi
 
       - name: Empaquetar solo los clips finales
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: clips-listos
           path: |
