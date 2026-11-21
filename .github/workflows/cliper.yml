@@ -1,0 +1,101 @@
+```yaml
+name: Cliper Automatico
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Link de YouTube (ARZ Urus, Marc Verdu, etc.)'
+        required: true
+        type: string
+      cantidad:
+        description: 'Cuantos clips sacar (recomendado: 4)'
+        required: true
+        default: '4'
+        type: string
+      estilo:
+        description: 'Estilo de subtitulos'
+        required: true
+        default: 'bold_yellow'
+        type: choice
+        options:
+          - bold_yellow
+          - neon_pop
+          - clean_white
+      modelo:
+        description: 'Calidad de subtitulos (small = mejor espanol, base = mas rapido)'
+        required: true
+        default: 'small'
+        type: choice
+        options:
+          - small
+          - base
+          - tiny
+
+jobs:
+  clipear:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalar FFmpeg y fuentes profesionales
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-montserrat fonts-bebas-neue fontconfig
+          fc-cache -fv
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar Deno para yt-dlp
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Activar Cloudflare WARP (evita bloqueos de YouTube)
+        run: |
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(. /etc/os-release && echo $VERSION_CODENAME) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update && sudo apt-get install -y cloudflare-warp
+          warp-cli --accept-tos registration new || true
+          warp-cli --accept-tos mode proxy || true
+          warp-cli --accept-tos connect || true
+          sleep 4
+          if curl -s --max-time 8 -x http://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
+            echo "--proxy http://127.0.0.1:40000" | sudo tee /etc/yt-dlp.conf
+            echo "WARP proxy activo"
+          else
+            echo "WARP no disponible, continuando directo"
+          fi
+
+      - name: Cargar cookies opcionales si existen
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        run: |
+          if [ -n "$YT_COOKIES" ]; then
+            printf "%s" "$YT_COOKIES" > cookies.txt
+            echo "--cookies $(pwd)/cookies.txt" | sudo tee -a /etc/yt-dlp.conf
+            echo "Cookies activadas"
+          fi
+
+      - name: Descargar AI Agent Cut
+        run: |
+          git clone --depth 1 https://github.com/wisdomdaniel5544-ops/ai-agent-cut.git
+          cd ai-agent-cut
+          pip install -r requirements.txt
+          pip install -U yt-dlp
+
+      - name: Crear clips virales
+        run: |
+          cd ai-agent-cut
+          python -m aiagentcut "${{ inputs.url }}" -o ../output -n "${{ inputs.cantidad }}" -p "${{ inputs.estilo }}" -m "${{ inputs.modelo }}"
+
+      - name: Empaquetar solo los clips finales
+        uses: actions/upload-artifact@v4
+        with:
+          name: clips-listos
+          path: |
+            output/clip_*.mp4
+            output/report.json
+          retention-days: 1
+          if-no-files-found: error
