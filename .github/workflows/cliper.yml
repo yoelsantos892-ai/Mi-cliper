@@ -1,41 +1,105 @@
-name: Cliper Automatico
+name: Cliper Pro Elegante
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'Link de YouTube (ARZ Urus, Marc Verdu, etc.)'
+        description: 'Link de YouTube (Marc Verdu, ARZ Urus, podcast)'
         required: true
         type: string
+      creador:
+        description: 'A quien estas clipeando (ajusta titulos y hashtags)'
+        required: true
+        default: 'marc_verdu'
+        type: choice
+        options:
+          - marc_verdu
+          - arz_urus
+          - ambos
+      modo_camara:
+        description: 'Como se grabo el video'
+        required: true
+        default: '1_persona'
+        type: choice
+        options:
+          - 1_persona
+          - 2_personas_pantalla_partida
+          - plano_completo_elegante
+      usar_broll:
+        description: 'Meter B-Roll inteligente por contexto (pon NO si ya sale con coches/viajes)'
+        required: true
+        default: 'no'
+        type: choice
+        options:
+          - no
+          - si
+      usar_musica:
+        description: 'Musica Dark Ambient sutil + audio de estudio'
+        required: true
+        default: 'si'
+        type: choice
+        options:
+          - si
+          - no
+      enfoque:
+        description: 'Tema opcional a buscar (ej: dinero, shopify, china) o dejar vacio'
+        required: false
+        default: ''
+        type: string
       cantidad:
-        description: 'Cuantos clips sacar (recomendado: 4)'
+        description: 'Cuantos clips sacar'
         required: true
         default: '4'
         type: string
-      estilo:
-        description: 'Estilo de subtitulos'
+      duracion_max:
+        description: 'Duracion maxima en segundos (45=rapido, 68=largo >1min TikTok)'
         required: true
-        default: 'bold_yellow'
+        default: '45'
         type: choice
         options:
-          - bold_yellow
-          - neon_pop
+          - '35'
+          - '45'
+          - '68'
+      estilo:
+        description: 'Estilo visual (clean_white = mas elegante y limpio)'
+        required: true
+        default: 'clean_white'
+        type: choice
+        options:
           - clean_white
+          - bold_yellow
       modelo:
-        description: 'Calidad de subtitulos (small = mejor espanol, base = mas rapido)'
+        description: 'Precision en espanol (small = mejor, base = mas rapido)'
         required: true
         default: 'small'
         type: choice
         options:
           - small
           - base
-          - tiny
+      url_musica:
+        description: 'Link opcional de musica propia sin copyright (dejar vacio = Dark Ambient)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   clipear:
     runs-on: ubuntu-latest
     steps:
-      - name: Instalar FFmpeg y fuentes profesionales
+      - name: Descargar archivos del repositorio
+        uses: actions/checkout@v6
+
+      - name: Cachear modelos y musica
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/huggingface
+            ~/.cache/micliper_music
+          key: micliper-${{ runner.os }}-${{ inputs.modelo }}-v1
+          restore-keys: |
+            micliper-${{ runner.os }}-
+
+      - name: Instalar FFmpeg y fuentes elegantes
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-montserrat fonts-bebas-neue fontconfig
@@ -67,7 +131,7 @@ jobs:
             echo "WARP activo"
           ) || echo "Continuando sin WARP"
 
-      - name: Descargar AI Agent Cut y yt-dlp actualizado
+      - name: Instalar motor AI Agent Cut y yt-dlp
         run: |
           git clone --depth 1 https://github.com/wisdomdaniel5544-ops/ai-agent-cut.git
           cd ai-agent-cut
@@ -83,14 +147,11 @@ jobs:
             printf "%s\n" "$YT_COOKIES" > cookies.txt
             EXTRA_ARGS+=(--cookies cookies.txt)
             echo "Usando cookies de YT_COOKIES"
-          else
-            echo "AVISO: No se encontro el secreto YT_COOKIES"
           fi
           if [ -n "$WARP_PROXY" ]; then
             EXTRA_ARGS+=(--proxy "$WARP_PROXY")
           fi
           if ! yt-dlp "${EXTRA_ARGS[@]}" --no-playlist -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best" --merge-output-format mp4 -o video.mp4 "${{ inputs.url }}"; then
-            echo "Primer intento fallo; reintentando sin proxy WARP..."
             RETRY_ARGS=()
             if [ -f cookies.txt ]; then
               RETRY_ARGS+=(--cookies cookies.txt)
@@ -98,21 +159,58 @@ jobs:
             yt-dlp "${RETRY_ARGS[@]}" --no-playlist -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best" --merge-output-format mp4 -o video.mp4 "${{ inputs.url }}"
           fi
 
-      - name: Crear clips virales
+      - name: Preparar encuadre de camara
         run: |
-          cd ai-agent-cut
-          if python -m aiagentcut --help | grep -q -- "--lang"; then
-            python -m aiagentcut ../video.mp4 -o ../output -n "${{ inputs.cantidad }}" -p "${{ inputs.estilo }}" -m "${{ inputs.modelo }}" --lang es
+          if [ "${{ inputs.modo_camara }}" = "2_personas_pantalla_partida" ]; then
+            echo "Partiendo pantalla arriba/abajo para 2 personas..."
+            python pro_clipper.py pre-split --input video.mp4 --output video_ready.mp4
           else
-            python -m aiagentcut ../video.mp4 -o ../output -n "${{ inputs.cantidad }}" -p "${{ inputs.estilo }}" -m "${{ inputs.modelo }}"
+            mv video.mp4 video_ready.mp4
           fi
 
-      - name: Empaquetar solo los clips finales
+      - name: Generar base de clips
+        run: |
+          ARGS=(
+            ../video_ready.mp4
+            -o ../output
+            -n "${{ inputs.cantidad }}"
+            -p "${{ inputs.estilo }}"
+            -m "${{ inputs.modelo }}"
+            --max "${{ inputs.duracion_max }}"
+          )
+          if [ "${{ inputs.duracion_max }}" = "68" ]; then
+            ARGS+=(--min 60)
+          else
+            ARGS+=(--min 20)
+          fi
+          cd ai-agent-cut
+          HELP_TXT="$(python -m aiagentcut --help)"
+          if echo "$HELP_TXT" | grep -q -- "--lang"; then
+            ARGS+=(--lang es)
+          fi
+          if [ -n "${{ inputs.enfoque }}" ] && echo "$HELP_TXT" | grep -q -- "--prompt"; then
+            ARGS+=(--prompt "${{ inputs.enfoque }}")
+          fi
+          if [ "${{ inputs.modo_camara }}" = "plano_completo_elegante" ] && echo "$HELP_TXT" | grep -q -- "--fit"; then
+            ARGS+=(--fit blur)
+          fi
+          python -m aiagentcut "${ARGS[@]}"
+
+      - name: Pulir estilo elegante, B-Roll inteligente y textos virales
+        env:
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: |
+          python pro_clipper.py post \
+            --creador "${{ inputs.creador }}" \
+            --broll "${{ inputs.usar_broll }}" \
+            --musica "${{ inputs.usar_musica }}" \
+            --url-musica "${{ inputs.url_musica }}" \
+            --modelo "${{ inputs.modelo }}"
+
+      - name: Empaquetar clips enumerados y guia de publicacion
         uses: actions/upload-artifact@v7
         with:
           name: clips-listos
-          path: |
-            output/clip_*.mp4
-            output/report.json
+          path: final_output/*
           retention-days: 1
           if-no-files-found: error
