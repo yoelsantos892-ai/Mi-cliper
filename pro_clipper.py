@@ -3,8 +3,10 @@ from pathlib import Path
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
 MUSIC_URLS = [
-    "https://freepd.com/music/3%20am%20West%20End.mp3",
-    "https://freepd.com/music/Arpent.mp3",
+    "https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/0BJeQ5LxFZFAwUdexbeR3sVentOpAZSevoDgzTPc.mp3",
+    "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Hard%20Boiled.mp3",
+    "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Second%20Coming%20-%20no%20percussion.mp3",
+    "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Inspired.mp3",
 ]
 RULES = [
     ("dinero", {"dinero","euros","euro","dolares","dólares","facturar","facturando","facture","facturé","facturo","facturó","millon","millón","millones","ingresos","beneficio","cobrar","pagar","billetes","banco","ganar","ganando","rentabilidad"}, ["counting money dark","gold watch luxury dark"], {"money","cash","dollar","euro","currency","gold","watch","finance","bank","wealth","coin","business"}),
@@ -43,6 +45,11 @@ def probe(p):
     d = json.loads(out)
     w, h = next(((int(s["width"]), int(s["height"])) for s in d.get("streams",[]) if "width" in s), (1280,720))
     return w, h, float(d.get("format",{}).get("duration", 40.0))
+
+def decode_wav_np(path):
+    import numpy as np
+    raw = subprocess.check_output(["ffmpeg","-nostdin","-threads","0","-i",str(path),"-f","f32le","-ac","1","-ar","16000","-"], stderr=subprocess.DEVNULL)
+    return np.frombuffer(raw, np.float32)
 
 def dl(url, dst):
     with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=25) as r, open(dst, "wb") as f:
@@ -157,7 +164,7 @@ def post(args):
     for i, cp in enumerate(clips, 1):
         outp = fdir/f"{i:02d}_clip.mp4"
         _, _, dur = probe(cp)
-        segs, _ = wm.transcribe(str(cp), language="es", word_timestamps=True, vad_filter=True)
+        segs, _ = wm.transcribe(decode_wav_np(cp), language="es", word_timestamps=True, vad_filter=True)
         words, texts = [], []
         for s in segs:
             texts.append(s.text.strip())
